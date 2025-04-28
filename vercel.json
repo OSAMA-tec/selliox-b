@@ -3,12 +3,12 @@
   "public": true,
   "buildCommand": "npm run vercel-build",
   "installCommand": "npm install",
-  "outputDirectory": "dist",
+  "outputDirectory": "public",
   "framework": "node",
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "dist/index.js"
+      "dest": "/index.js"
     }
   ]
 }

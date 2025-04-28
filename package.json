@@ -9,11 +9,11 @@
         "node": ">=16.0.0"
     },
     "scripts": {
-        "start": "node dist/index.js",
+        "start": "node public/index.js",
         "dev": "nodemon index.js",
-        "prebuild": "mkdir -p public && touch public/.gitkeep",
-        "build": "npm run prebuild && node build.mjs",
-        "vercel-build": "npm run build",
+        "build": "node build.mjs",
+        "vercel-build": "npm run build && npm run copy-to-public",
+        "copy-to-public": "mkdir -p public && cp -r dist/* public/",
         "clean": "rimraf dist public"
     },
     "keywords": [],
