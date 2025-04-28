@@ -72,14 +72,95 @@ const update = async(req,res)=>{
   const userId = req.user._id;
   const updatedData = req.body;
   try{
-    const user = await User.findByIdAndUpdate(userId,updatedData,{new:true,runValidators:true});
-    res.status(200).json(user);
+    // Check if password is included in the update data
+    if(updatedData.password) {
+      // Use findById and save to ensure password hashing middleware runs
+      const user = await User.findById(userId);
+      if(!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      
+      // Update user fields
+      Object.keys(updatedData).forEach(key => {
+        user[key] = updatedData[key];
+      });
+      
+      // Save user to trigger the password hashing middleware
+      const updatedUser = await user.save();
+      return res.status(200).json(updatedUser);
+    } else {
+      // For non-password updates, we can use findByIdAndUpdate
+      const user = await User.findByIdAndUpdate(userId, updatedData, {new:true, runValidators:true});
+      return res.status(200).json(user);
+    }
   }catch(e){
     res.status(500).json({ message: 'Failed to update user', e });
   }
 }
+
+// Check if current password is valid
+const checkCurrentPassword = catchAsyncErrors(async (req, res, next) => {
+  try {
+    const { currentPassword } = req.body;
+    if (!currentPassword) {
+      return next(new ErrorHandler("Please provide current password", 400));
+    }
+
+    // Get user with password field (which is normally not selected)
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return next(new ErrorHandler("User not found", 404));
+    }
+
+    // Check if provided password matches stored password
+    const isPasswordValid = await user.comparePassword(currentPassword);
+    
+    res.status(200).json({
+      success: true,
+      isValid: isPasswordValid
+    });
+  } catch (error) {
+    return next(new ErrorHandler(error.message, 500));
+  }
+});
+
+// Update user password
+const updatePassword = catchAsyncErrors(async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    
+    // Validate inputs
+    if (!currentPassword || !newPassword) {
+      return next(new ErrorHandler("Please provide both current and new password", 400));
+    }
+
+    // Get user with password field
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return next(new ErrorHandler("User not found", 404));
+    }
+
+    // Verify current password
+    const isPasswordValid = await user.comparePassword(currentPassword);
+    if (!isPasswordValid) {
+      return next(new ErrorHandler("Current password is incorrect", 400));
+    }
+
+    // Update password
+    user.password = newPassword;
+    await user.save();
+
+    // Return new token with updated user data
+    sendToken(user, 200, res);
+  } catch (error) {
+    return next(new ErrorHandler(error.message, 500));
+  }
+});
+
 export default {
   register,
   login,
-  update
+  update,
+  checkCurrentPassword,
+  updatePassword
 };

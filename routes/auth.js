@@ -21,4 +21,18 @@ router.put(
   isAuthenticated,
   AuthController.update
 )
+
+// Add new routes for password management
+router.post(
+  "/check-password",
+  isAuthenticated,
+  AuthController.checkCurrentPassword
+);
+
+router.put(
+  "/update-password",
+  isAuthenticated,
+  AuthController.updatePassword
+);
+
 export default router;
