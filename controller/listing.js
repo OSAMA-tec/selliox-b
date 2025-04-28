@@ -3,6 +3,7 @@ import Listing from "../models/listing.js";
 import User from "../models/user.js";
 import Plan from "../models/plan.model.js";
 import Credit from "../models/creditCard.js";
+import PlanUser from "../models/planUser.model.js";
 import ErrorHandler from "../utils/ErrorHandler.js";
 import catchAsyncErrors from "../middleware/catchAsyncErrors.js";
 import Stripe from "stripe";
@@ -10,6 +11,7 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 import lodash from "lodash";
 import Counter from "../models/counter.js";
+
 dotenv.config();
 const stripe = new Stripe(`${process.env.STRIPE_SECRET_KEY}`);
 
@@ -29,10 +31,11 @@ const create = async (req, res) => {
       .json({ message: "Please upload your business logo" }); */
   }
 
-  const imageUrls = serviceImages&& serviceImages.map((file) => path.join(file.filename));
+  const imageUrls = serviceImages && serviceImages.map((file) => path.join(file.filename));
   const logoUrl = logo && path.join(logo.filename);
+  
   try {
-    const {
+    let {
       businessTitle,
       businessEmailAddress,
       businessInfo,
@@ -45,44 +48,166 @@ const create = async (req, res) => {
       services,
       location,
       paymentId,
+      // Handle alternate field names that might be in the form
+      title,
+      description,
+      category,
+      selectedPlan,
+      businessName,
+      businessEmail,
+      country,
+      region,
+      district,
+      aboutBusiness,
+      website,
     } = req.body;
-    const credit = await Credit.findById(paymentId);
-    const plan = await Plan.findById(servicePlan);
-    console.log("credit", credit, plan.planPrice);
-
-    // check email address
-    // const emailAddress = await Listing.findOne({ businessEmailAddress });
-    // if (!emailAddress) {
-    //   return res
-    //     .status(400)
-    //     .json({ message: "Please enter a email for the listing" });
-    // }
-
-    let paymentIntent;
-    try {
-      paymentIntent = await stripe.paymentIntents.create({
-        amount: plan.planPrice * 100,
-        currency: "nzd",
-        payment_method: credit.paymentId,
-        customer: credit.customerId,
-        confirm: true,
-        automatic_payment_methods: {
-          enabled: true,
-          allow_redirects: "never",
-        },
+    
+    // Use alternate field values if primary fields are missing
+    businessTitle = businessTitle || title || businessName || "";
+    serviceTitle = serviceTitle || title || "";
+    businessEmailAddress = businessEmailAddress || businessEmail || "";
+    businessInfo = businessInfo || aboutBusiness || "";
+    serviceDescription = serviceDescription || description || "";
+    serviceCategory = serviceCategory || category || "";
+    businessWebsite = businessWebsite || website || "";
+    
+    // Handle the case where servicePlan comes as an object (from frontend form)
+    if (selectedPlan && typeof selectedPlan === 'object') {
+      try {
+        // Try to parse it if it's a string representation of an object
+        if (typeof selectedPlan === 'string') {
+          selectedPlan = JSON.parse(selectedPlan);
+        }
+        // Extract the ID from the plan object
+        servicePlan = selectedPlan._id || selectedPlan.id || servicePlan;
+      } catch (e) {
+        console.error("Error parsing selectedPlan:", e);
+      }
+    }
+    
+    // Build location string from country, region, district if location is empty
+    if (!location && (country || region || district)) {
+      const locationParts = [country, region, district].filter(Boolean);
+      location = locationParts.join(', ');
+    }
+    
+    // Validate required fields
+    if (!businessTitle || !serviceTitle || !servicePlan) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Required fields missing: businessTitle, serviceTitle, and servicePlan are required" 
       });
-    } catch (err) {
-      console.log("Payment error:", err);
-      return res.status(400).json({ success: false, message: err.message });
+    }
+    
+    // Validate location
+    if (!location) {
+      return res.status(400).json({
+        success: false,
+        message: "Location is required. Please provide either location or country/region/district information."
+      });
     }
 
-    if (!paymentIntent || paymentIntent.status !== "succeeded") {
-      return res
-        .status(400)
-        .json({ success: false, message: "Payment not completed" });
+    // Handle services if it's a string instead of an array
+    if (typeof services === 'string') {
+      services = [services];
+    } else if (!Array.isArray(services)) {
+      services = [];
     }
 
-    if (paymentIntent.status === "succeeded") {
+    // Get the plan
+    const plan = await Plan.findById(servicePlan);
+    if (!plan) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Plan not found" 
+      });
+    }
+
+    // ============
+    // Payment validation - Either using paymentId OR checking PlanUser
+    // ============
+    let paymentValidated = false;
+    const userId = req.user._id;
+
+    // Option 1: Check if user has an active subscription through PlanUser
+    // Handle both no paymentId or the special value "using_existing_subscription"
+    if (!paymentId || paymentId === "using_existing_subscription") {
+      // Check if user has an active plan subscription
+      const activePlanUser = await PlanUser.findOne({
+        userId: userId,
+        planId: servicePlan,
+        isActive: true,
+        endDate: { $gt: new Date() } // Make sure it hasn't expired
+      });
+
+      if (activePlanUser) {
+        paymentValidated = true;
+        console.log(`Using existing plan subscription: ${activePlanUser._id}`);
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          message: "No active plan subscription found. Please subscribe to a plan first." 
+        });
+      }
+    } 
+    // Option 2: Using provided payment ID (old method)
+    else {
+      try {
+        // Only attempt to find by ID if it's not our special string
+        const credit = await Credit.findById(paymentId);
+        if (!credit) {
+          return res.status(404).json({ 
+            success: false, 
+            message: "Payment method not found" 
+          });
+        }
+
+        // Create payment intent with Stripe
+        try {
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: plan.planPrice * 100,
+            currency: "nzd",
+            payment_method: credit.paymentId,
+            customer: credit.customerId,
+            confirm: true,
+            automatic_payment_methods: {
+              enabled: true,
+              allow_redirects: "never",
+            },
+          });
+
+          if (paymentIntent.status === "succeeded") {
+            paymentValidated = true;
+          } else {
+            return res.status(400).json({ 
+              success: false, 
+              message: "Payment not completed", 
+              status: paymentIntent.status 
+            });
+          }
+        } catch (err) {
+          console.log("Payment error:", err);
+          return res.status(400).json({ 
+            success: false, 
+            message: err.message 
+          });
+        }
+      } catch (error) {
+        // Handle case where paymentId isn't a valid ObjectId
+        if (error.name === "CastError") {
+          return res.status(400).json({ 
+            success: false, 
+            message: "Invalid payment ID format. Please provide a valid payment ID or use 'using_existing_subscription'." 
+          });
+        }
+        throw error; // Rethrow unexpected errors
+      }
+    }
+
+    // ============
+    // Create the listing
+    // ============
+    if (paymentValidated) {
       // Get the next available listing number
       let counter = await Counter.findOne({ name: "listingNumber" });
       if (!counter) {
@@ -102,7 +227,7 @@ const create = async (req, res) => {
         serviceTitle,
         businessInfo,
         serviceDescription,
-        serviceCategory, //foundCategory.id
+        serviceCategory,
         serviceSubCategory,
         serviceImages: imageUrls,
         logo: logoUrl,
@@ -112,20 +237,25 @@ const create = async (req, res) => {
         website: businessWebsite,
         sellerId: req.user?.id,
       });
+      
       res.status(201).json({
         success: true,
-        message: "Payment Successful and Listing is Created",
+        message: "Listing created successfully",
         createdList,
       });
     } else {
-      return res
-        .status(400)
-        .json({ success: false, message: "Payment not completed" });
+      return res.status(400).json({ 
+        success: false, 
+        message: "Payment validation failed" 
+      });
     }
   } catch (e) {
-    res
-      .status(e.statusCode || 500)
-      .json(e.message || "an  unexpected error occured");
+    console.error("Listing creation error:", e);
+    res.status(e.statusCode || 500).json({ 
+      success: false,
+      message: e.message || "An unexpected error occurred",
+      error: e.toString()
+    });
   }
 };
 

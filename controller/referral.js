@@ -575,12 +575,253 @@ export const markAllNotificationsAsRead = catchAsyncErrors(async (req, res, next
   });
 });
 
+// Get detailed referral dashboard for the user
+export const getReferralDashboard = catchAsyncErrors(async (req, res, next) => {
+  const userId = req.user._id;
+  
+  // ============
+  // Fetch base user data and stats
+  // ============
+  const user = await User.findById(userId);
+  if (!user) {
+    return next(new ErrorHandler("User not found", 404));
+  }
+  
+  // Get user's referral code
+  const referralCode = await ReferralCode.findOne({ userId, isActive: true });
+  
+  // ============
+  // Fetch all referrals with detailed information
+  // ============
+  // Get all referrals (both pending and converted)
+  const allReferrals = await Referral.find({ 
+    referrerUserId: userId
+  }).sort({ createdAt: -1 });
+  
+  // Populate referred user details for each referral
+  const populatedReferrals = await Referral.find({ 
+    referrerUserId: userId 
+  })
+  .populate({
+    path: 'referredUserId',
+    select: 'fullName username email profileImage createdAt'
+  })
+  .populate({
+    path: 'listing',
+    select: 'title price status createdAt'
+  })
+  .sort({ createdAt: -1 });
+  
+  // ============
+  // Prepare statistics and analytics
+  // ============
+  // Calculate conversion rate
+  const conversionRate = allReferrals.length > 0 
+    ? (user.referralStats.successfulConversions / allReferrals.length) * 100 
+    : 0;
+  
+  // Group referrals by date (month)
+  const referralsByMonth = {};
+  populatedReferrals.forEach(referral => {
+    const date = new Date(referral.createdAt);
+    const monthYear = `${date.getMonth() + 1}/${date.getFullYear()}`;
+    
+    if (!referralsByMonth[monthYear]) {
+      referralsByMonth[monthYear] = {
+        count: 0,
+        conversions: 0
+      };
+    }
+    
+    referralsByMonth[monthYear].count++;
+    if (referral.status === 'converted') {
+      referralsByMonth[monthYear].conversions++;
+    }
+  });
+  
+  // Group referrals by reward type
+  const rewardTypeCounts = {
+    free_month: 0,
+    draw_entries: 0
+  };
+  
+  populatedReferrals.forEach(referral => {
+    if (referral.rewardType && referral.status === 'converted') {
+      rewardTypeCounts[referral.rewardType]++;
+    }
+  });
+  
+  // ============
+  // Fetch active draw entries
+  // ============
+  const drawEntries = await DrawEntry.find({ 
+    userId,
+    status: "active" 
+  }).sort({ createdAt: -1 });
+  
+  // Group entries by source
+  const entriesBySource = {
+    signup: 0,
+    referral: 0,
+    listing: 0,
+    other: 0
+  };
+  
+  drawEntries.forEach(entry => {
+    if (entry.source && entriesBySource.hasOwnProperty(entry.source)) {
+      entriesBySource[entry.source] += entry.tickets;
+    } else {
+      entriesBySource.other += entry.tickets;
+    }
+  });
+  
+  // Get total tickets
+  const totalTickets = drawEntries.reduce((sum, entry) => sum + entry.tickets, 0);
+  
+  // ============
+  // Get current draw information
+  // ============
+  const currentDate = new Date();
+  const currentMonth = currentDate.getMonth();
+  const currentYear = currentDate.getFullYear();
+  
+  let currentDraw = await Draw.findOne({
+    month: currentMonth,
+    year: currentYear
+  });
+  
+  if (!currentDraw) {
+    currentDraw = await Draw.create({
+      month: currentMonth,
+      year: currentYear,
+      status: "pending"
+    });
+  }
+  
+  // Get countdown to end of month (draw date)
+  const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
+  const timeUntilDraw = lastDayOfMonth.getTime() - currentDate.getTime();
+  
+  // Format countdown
+  const daysUntilDraw = Math.floor(timeUntilDraw / (1000 * 60 * 60 * 24));
+  const hoursUntilDraw = Math.floor((timeUntilDraw % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  
+  // Check if user is a winner of any draw
+  const winningDraw = await Draw.findOne({
+    "winner.userId": userId,
+    status: "completed",
+    paymentStatus: { $ne: "paid" }
+  });
+  
+  // ============
+  // Get referral notifications
+  // ============
+  const notifications = await Notification.find({
+    userId,
+    read: false,
+    $or: [
+      { type: 'referral_used' },
+      { type: 'draw_entry' }
+    ]
+  }).sort({ createdAt: -1 }).limit(5);
+  
+  // ============
+  // Return comprehensive dashboard data
+  // ============
+  res.status(200).json({
+    success: true,
+    user: {
+      id: user._id,
+      fullName: user.fullName,
+      username: user.username,
+      email: user.email,
+      profileImage: user.profileImage
+    },
+    referralCode: referralCode ? referralCode.code : null,
+    codeUsageCount: referralCode ? referralCode.usageCount : 0,
+    referralLink: referralCode ? `${process.env.FRONTEND_URL || 'https://yourapp.com'}/referral/${referralCode.code}` : null,
+    referralStats: {
+      ...user.referralStats,
+      conversionRate: conversionRate.toFixed(2),
+      pendingReferrals: allReferrals.length - user.referralStats.successfulConversions,
+      freeMonthsEarned: rewardTypeCounts.free_month,
+      drawEntriesEarned: rewardTypeCounts.draw_entries * 5, // 5 tickets per referral
+    },
+    analytics: {
+      referralsByMonth,
+      rewardTypes: rewardTypeCounts,
+      entriesBySource
+    },
+    referrals: populatedReferrals.map(ref => ({
+      id: ref._id,
+      code: ref.referralCode,
+      status: ref.status,
+      createdAt: ref.createdAt,
+      convertedAt: ref.convertedAt,
+      rewardType: ref.rewardType,
+      rewardStatus: ref.rewardStatus,
+      referredUser: ref.referredUserId 
+        ? {
+            id: ref.referredUserId._id,
+            name: ref.referredUserId.fullName,
+            username: ref.referredUserId.username,
+            email: ref.referredUserId.email,
+            profileImage: ref.referredUserId.profileImage,
+            joinedAt: ref.referredUserId.createdAt
+          } 
+        : null,
+      listing: ref.listing 
+        ? {
+            id: ref.listing._id,
+            title: ref.listing.title,
+            price: ref.listing.price,
+            status: ref.listing.status,
+            createdAt: ref.listing.createdAt
+          } 
+        : null
+    })),
+    drawEntries: {
+      total: totalTickets,
+      entries: drawEntries.map(entry => ({
+        id: entry._id,
+        tickets: entry.tickets,
+        source: entry.source,
+        status: entry.status,
+        createdAt: entry.createdAt,
+        expiryDate: entry.expiryDate
+      })),
+      bySource: entriesBySource
+    },
+    currentDraw: {
+      month: currentMonth,
+      year: currentYear,
+      status: currentDraw.status,
+      daysUntilDraw,
+      hoursUntilDraw,
+      drawDate: lastDayOfMonth
+    },
+    winnerStatus: {
+      isWinner: !!winningDraw,
+      winningDraw
+    },
+    notifications: notifications.map(notif => ({
+      id: notif._id,
+      type: notif.type,
+      message: notif.message,
+      createdAt: notif.createdAt,
+      data: notif.data
+    })),
+    unreadNotificationsCount: notifications.length
+  });
+});
+
 export default {
   generateReferralCode,
   validateReferralCode,
   applyReferralCode,
   chooseReward,
   getUserReferralData,
+  getReferralDashboard,
   submitPaymentDetails,
   checkWinnerStatus,
   getReferralNotifications,

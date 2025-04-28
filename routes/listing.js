@@ -20,7 +20,7 @@ router.post(
   ListingController.create
 );
 router.get("/mylistings", isAuthenticated, ListingController.findUser);
-router.get("/saved", isAuthenticated, ListingController.getSaved);
+router.get("/saved/find", isAuthenticated, ListingController.getSaved);
 router.post("/saved/:listingId", isAuthenticated, ListingController.addSaved);
 router.get("/saved/check/:listingId", isAuthenticated, ListingController.checkSaved);
 router.delete("/saved/:listingId", isAuthenticated, ListingController.removeSaved);

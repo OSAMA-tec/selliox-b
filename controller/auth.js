@@ -1,13 +1,16 @@
 import path from "path";
 
 import User from "../models/user.js";
+import Referral from "../models/referral.js";
+import ReferralCode from "../models/referralCode.js";
+import DrawEntry from "../models/drawEntry.js";
 import ErrorHandler from "../utils/ErrorHandler.js";
 import catchAsyncErrors from "../middleware/catchAsyncErrors.js";
 import sendToken from "../utils/jwtToken.js";
 // test
 const register = catchAsyncErrors(async (req, res, next) => {
   try {
-    const { fullName, email, password   } = req.body;
+    const { fullName, email, password, referralCode } = req.body;
     if (!fullName || !email || !password) {
       return next(new ErrorHandler("Please provide the all fields", 400));
     }
@@ -32,6 +35,7 @@ const register = catchAsyncErrors(async (req, res, next) => {
       username = `${baseUsername}${newRandomSuffix}`;
     }
     
+    // Create the user
     const user = await User.create({
       fullName: fullName,
       email: email,
@@ -40,6 +44,87 @@ const register = catchAsyncErrors(async (req, res, next) => {
     }).catch((e) => {
       return next(new ErrorHandler(e.message, 400));
     });
+
+    // ============
+    // Create draw entry for new sign up (1 ticket)
+    // ============
+    try {
+      // Create a draw entry for the new user
+      const drawEntry = await DrawEntry.create({
+        userId: user._id,
+        tickets: 1,
+        source: "signup",
+      });
+      
+      // Update user's active tickets count
+      await User.findByIdAndUpdate(user._id, {
+        $inc: { "referralStats.activeDrawTickets": 1 }
+      });
+    } catch (drawEntryError) {
+      console.error("Error creating signup draw entry:", drawEntryError);
+      // We'll continue with registration even if creating the draw entry fails
+    }
+
+    // ============
+    // Handle referral code if provided
+    // ============
+    if (referralCode) {
+      try {
+        // Find the referral code and check if it's active
+        const referralCodeDoc = await ReferralCode.findOne({ 
+          code: referralCode.toUpperCase(),
+          isActive: true
+        });
+
+        if (!referralCodeDoc) {
+          // We'll still register the user but inform them about the invalid code
+          sendToken(user, 200, res, {
+            referralStatus: "invalid",
+            message: "User registered successfully, but the referral code is invalid or expired."
+          });
+          return;
+        }
+
+        // Make sure referrer is not the same as the new user
+        if (referralCodeDoc.userId.toString() === user._id.toString()) {
+          sendToken(user, 200, res, {
+            referralStatus: "self_referral",
+            message: "User registered successfully, but you cannot refer yourself."
+          });
+          return;
+        }
+
+        // Create a new referral record
+        const referral = await Referral.create({
+          referrerUserId: referralCodeDoc.userId,
+          referredUserId: user._id,
+          referralCode: referralCode.toUpperCase(),
+          status: "pending" // Initial status
+        });
+
+        // Increment usage count for the referral code
+        referralCodeDoc.usageCount += 1;
+        await referralCodeDoc.save();
+
+        // Send token with referral info
+        sendToken(user, 200, res, {
+          referralStatus: "success",
+          message: "User registered successfully with valid referral code."
+        });
+        return;
+      } catch (referralError) {
+        console.error("Error processing referral:", referralError);
+        // If there's an error with the referral processing, we'll still continue 
+        // with user registration but inform about the referral issue
+        sendToken(user, 200, res, {
+          referralStatus: "error",
+          message: "User registered successfully, but there was an error processing the referral code."
+        });
+        return;
+      }
+    }
+
+    // No referral code provided, send regular token
     sendToken(user, 200, res);
   } catch (error) {
     return next(new ErrorHandler(error.message, 500));

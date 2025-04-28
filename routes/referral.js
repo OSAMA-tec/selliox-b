@@ -10,6 +10,7 @@ router.get("/validate-code/:code", referralController.validateReferralCode);
 
 // User referral dashboard
 router.get("/user-data", isAuthenticated, referralController.getUserReferralData);
+router.get("/dashboard", isAuthenticated, referralController.getReferralDashboard);
 router.post("/apply-code", isAuthenticated, referralController.applyReferralCode);
 router.post("/choose-reward", isAuthenticated, referralController.chooseReward);
 

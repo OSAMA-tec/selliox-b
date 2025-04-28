@@ -1,7 +1,9 @@
 // create token and send it in json response
-const sendToken = (user, statusCode, res) => {
+const sendToken = (user, statusCode, res, additionalData = {}) => {
   const token = user.getJwtToken();
-  res.status(statusCode).json({
+  
+  // Create the response object
+  const response = {
     success: true,
     token,
     user: {
@@ -9,12 +11,15 @@ const sendToken = (user, statusCode, res) => {
       fullName: user.fullName,
       email: user.email,
       userType: user.userType,
-      avatar:user.profileImage,
-      phone:user.phoneNumber,
-      username:user.username,
-      about:user.about
+      avatar: user.profileImage,
+      phone: user.phoneNumber,
+      username: user.username,
+      about: user.about
     },
-  });
+    ...additionalData // Include any additional data passed to the function
+  };
+  
+  res.status(statusCode).json(response);
 };
 
 export default sendToken;
