@@ -3,7 +3,8 @@ import express from 'express';
 import mongoose from 'mongoose';
 import User from "../models/user.js";
 const router = express.Router();
-import transporter from '../utils/mailer.js';
+import nodemailer from 'nodemailer';
+import transporter, { sendMail } from '../utils/mailer.js';
 
 // Email sending route
 router.post('/send', async(req, res) => {  
@@ -17,8 +18,21 @@ router.post('/send', async(req, res) => {
     });
   }
 
+  // ============
+  // Handle case where sellerId is an object with _id property
+  // ============
+  let sellerIdToUse;
+  
+  if (typeof sellerId === 'object' && sellerId !== null) {
+    // If sellerId is an object, try to get the _id property
+    sellerIdToUse = sellerId._id;
+  } else {
+    // If sellerId is already a string, use it directly
+    sellerIdToUse = sellerId;
+  }
+
   // Validate seller ID
-  if (!mongoose.Types.ObjectId.isValid(sellerId)) {
+  if (!sellerIdToUse || !mongoose.Types.ObjectId.isValid(sellerIdToUse)) {
     return res.status(400).json({ 
       success: false, 
       message: 'Invalid Seller ID format' 
@@ -27,7 +41,7 @@ router.post('/send', async(req, res) => {
 
   try {
     // Find the seller
-    const seller = await User.findById(sellerId);
+    const seller = await User.findById(sellerIdToUse);
 
     if (!seller) {
       return res.status(404).json({
@@ -59,8 +73,33 @@ router.post('/send', async(req, res) => {
       `
     };
 
-    // Send email
-    const info = await transporter.sendMail(mailOptions);
+    // ============
+    // Send email using the helper function or fallback 
+    // ============
+    let info;
+    
+    if (typeof sendMail === 'function') {
+      // Use the sendMail helper function if available
+      info = await sendMail(mailOptions);
+    } else if (transporter && typeof transporter.sendMail === 'function') {
+      // Fallback to using transporter directly if it exists
+      info = await transporter.sendMail(mailOptions);
+    } else {
+      // Create a temporary test account as last resort
+      const testAccount = await nodemailer.createTestAccount();
+      const tempTransporter = nodemailer.createTransport({
+        host: 'smtp.ethereal.email',
+        port: 587,
+        secure: false,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass,
+        },
+      });
+      
+      info = await tempTransporter.sendMail(mailOptions);
+      console.log('Test email URL:', nodemailer.getTestMessageUrl(info));
+    }
     
     return res.status(200).json({ 
       success: true,
