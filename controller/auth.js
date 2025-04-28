@@ -15,10 +15,28 @@ const register = catchAsyncErrors(async (req, res, next) => {
     if (userEmail) {
       return next(new ErrorHandler("User already exists", 422));
     }
+
+    // Generate username from email
+    // Extract part before @ and remove special characters
+    let baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '');
+    
+    // Add random digits for uniqueness (4 digits should be sufficient for most cases)
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    let username = `${baseUsername}${randomSuffix}`;
+    
+    // Check if username already exists and regenerate if needed
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) {
+      // Try a different random suffix if first attempt collides
+      const newRandomSuffix = Math.floor(1000 + Math.random() * 9000);
+      username = `${baseUsername}${newRandomSuffix}`;
+    }
+    
     const user = await User.create({
       fullName: fullName,
       email: email,
       password: password,
+      username: username
     }).catch((e) => {
       return next(new ErrorHandler(e.message, 400));
     });
@@ -31,6 +49,7 @@ const register = catchAsyncErrors(async (req, res, next) => {
 const login = catchAsyncErrors(async (req, res, next) => {
   try {
     const { email, password } = req.body;
+    console.log(await User.findOne({email}))
     if (!email || !password) {
       return next(new ErrorHandler("Please provide the all fields", 400));
     }
