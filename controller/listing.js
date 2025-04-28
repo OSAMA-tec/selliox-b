@@ -153,54 +153,87 @@ const create = async (req, res) => {
     // Option 2: Using provided payment ID (old method)
     else {
       try {
-        // Only attempt to find by ID if it's not our special string
-        const credit = await Credit.findById(paymentId);
-        if (!credit) {
-          return res.status(404).json({ 
-            success: false, 
-            message: "Payment method not found" 
-          });
-        }
-
-        // Create payment intent with Stripe
-        try {
-          const paymentIntent = await stripe.paymentIntents.create({
-            amount: plan.planPrice * 100,
-            currency: "nzd",
-            payment_method: credit.paymentId,
-            customer: credit.customerId,
-            confirm: true,
-            automatic_payment_methods: {
-              enabled: true,
-              allow_redirects: "never",
-            },
-          });
-
-          if (paymentIntent.status === "succeeded") {
-            paymentValidated = true;
-          } else {
+        // Check if the paymentId is a Stripe payment ID (starts with 'pi_')
+        if (paymentId.startsWith('pi_')) {
+          // Directly use the Stripe payment ID
+          try {
+            // Retrieve the payment intent to check its status
+            const paymentIntent = await stripe.paymentIntents.retrieve(paymentId);
+            
+            if (paymentIntent.status === "succeeded") {
+              paymentValidated = true;
+            } else {
+              return res.status(400).json({ 
+                success: false, 
+                message: "Payment not completed", 
+                status: paymentIntent.status 
+              });
+            }
+          } catch (err) {
+            console.log("Stripe payment retrieval error:", err);
             return res.status(400).json({ 
               success: false, 
-              message: "Payment not completed", 
-              status: paymentIntent.status 
+              message: "Invalid Stripe payment ID or payment verification failed" 
             });
           }
-        } catch (err) {
-          console.log("Payment error:", err);
-          return res.status(400).json({ 
-            success: false, 
-            message: err.message 
-          });
+        } else {
+          // Try to find by MongoDB ID if it's not a Stripe payment ID
+          try {
+            const credit = await Credit.findById(paymentId);
+            if (!credit) {
+              return res.status(404).json({ 
+                success: false, 
+                message: "Payment method not found" 
+              });
+            }
+
+            // Create payment intent with Stripe
+            try {
+              const paymentIntent = await stripe.paymentIntents.create({
+                amount: plan.planPrice * 100,
+                currency: "nzd",
+                payment_method: credit.paymentId,
+                customer: credit.customerId,
+                confirm: true,
+                automatic_payment_methods: {
+                  enabled: true,
+                  allow_redirects: "never",
+                },
+              });
+
+              if (paymentIntent.status === "succeeded") {
+                paymentValidated = true;
+              } else {
+                return res.status(400).json({ 
+                  success: false, 
+                  message: "Payment not completed", 
+                  status: paymentIntent.status 
+                });
+              }
+            } catch (err) {
+              console.log("Payment error:", err);
+              return res.status(400).json({ 
+                success: false, 
+                message: err.message 
+              });
+            }
+          } catch (error) {
+            // Handle case where paymentId isn't a valid ObjectId
+            if (error.name === "CastError") {
+              return res.status(400).json({ 
+                success: false, 
+                message: "Invalid payment ID format. Please provide a valid payment ID, a Stripe payment intent ID (pi_*), or use 'using_existing_subscription'." 
+              });
+            }
+            throw error; // Rethrow unexpected errors
+          }
         }
       } catch (error) {
-        // Handle case where paymentId isn't a valid ObjectId
-        if (error.name === "CastError") {
-          return res.status(400).json({ 
-            success: false, 
-            message: "Invalid payment ID format. Please provide a valid payment ID or use 'using_existing_subscription'." 
-          });
-        }
-        throw error; // Rethrow unexpected errors
+        console.error("Payment validation error:", error);
+        return res.status(500).json({ 
+          success: false, 
+          message: "An error occurred during payment validation" 
+        });
       }
     }
 
