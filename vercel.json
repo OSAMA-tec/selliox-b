@@ -1,13 +1,10 @@
 {
   "version": 2,
-  "buildCommand": "npm run build",
+  "public": true,
+  "buildCommand": "npm run vercel-build",
+  "installCommand": "npm install",
   "outputDirectory": "dist",
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/node"
-    }
-  ],
+  "framework": "node",
   "routes": [
     {
       "src": "/(.*)",
