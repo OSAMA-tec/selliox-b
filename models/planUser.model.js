@@ -36,6 +36,11 @@ const planUserSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Track listings used with this subscription
+  listingsUsed: {
+    type: Number,
+    default: 0
+  },
   // Additional subscription metadata
   paymentAmount: {
     type: Number,

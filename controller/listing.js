@@ -11,30 +11,62 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 import lodash from "lodash";
 import Counter from "../models/counter.js";
+import cloudinaryService from "../services/cloudinary.service.js";
 
 dotenv.config();
 const stripe = new Stripe(`${process.env.STRIPE_SECRET_KEY}`);
 
 const create = async (req, res) => {
-  const serviceImages = req.files && req.files["serviceImages"] && req.files["serviceImages"];
-  const logo = req.files && req.files["logo"] && req.files["logo"].length > 0 && req.files["logo"][0];
-  
-  if (!serviceImages || serviceImages.length === 0) {
-    // return res
-    //   .status(400)
-    //   .json({ message: "Please upload at least one image" });
-  }
-  if (!logo || logo.length === 0) {
-      //To do Amjed 2025.3.6
-      /*  return res
-      .status(400)
-      .json({ message: "Please upload your business logo" }); */
-  }
-
-  const imageUrls = serviceImages && serviceImages.map((file) => path.join(file.filename));
-  const logoUrl = logo && path.join(logo.filename);
-  
   try {
+    // Get uploaded files from request
+    const serviceImages = req.files && req.files["serviceImages"] && req.files["serviceImages"];
+    const logo = req.files && req.files["logo"] && req.files["logo"].length > 0 && req.files["logo"][0];
+    
+    // Validate required files if needed
+    if (!serviceImages || serviceImages.length === 0) {
+      // Optional validation - commented out for now
+      // return res.status(400).json({ message: "Please upload at least one image" });
+    }
+    if (!logo || logo.length === 0) {
+      // Optional validation - commented out for now
+      // return res.status(400).json({ message: "Please upload your business logo" });
+    }
+
+    // ============
+    // Upload files to Cloudinary
+    // ============
+    let imageUrls = [];
+    let logoUrl = null;
+
+    // Upload service images to Cloudinary
+    if (serviceImages && serviceImages.length > 0) {
+      try {
+        const imagePaths = serviceImages.map(file => file.path);
+        const uploadedImages = await cloudinaryService.uploadMultipleFiles(imagePaths, { folder: 'listings/images' });
+        imageUrls = uploadedImages.map(image => image.secure_url);
+      } catch (error) {
+        console.error('Error uploading service images:', error);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Error uploading service images to cloud storage" 
+        });
+      }
+    }
+
+    // Upload logo to Cloudinary
+    if (logo) {
+      try {
+        const uploadedLogo = await cloudinaryService.uploadFile(logo.path, { folder: 'listings/logos' });
+        logoUrl = uploadedLogo.secure_url;
+      } catch (error) {
+        console.error('Error uploading logo:', error);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Error uploading logo to cloud storage" 
+        });
+      }
+    }
+
     let {
       businessTitle,
       businessEmailAddress,
@@ -141,6 +173,32 @@ const create = async (req, res) => {
       });
 
       if (activePlanUser) {
+        // Get the plan type
+        const plan = await Plan.findById(servicePlan);
+        const planType = plan.planType;
+        
+        // Reject basic plans for listings
+        if (planType === "basic") {
+          return res.status(400).json({ 
+            success: false, 
+            message: "Basic plans cannot be used to create listings. Please upgrade to Premium or Featured plan." 
+          });
+        }
+        
+        // Set max listings based on plan type
+        let maxListings = 5; // Default for premium
+        if (planType === "featured") {
+          maxListings = 10;
+        }
+        
+        // Verify user hasn't reached their listing limit
+        if (activePlanUser.listingsUsed >= maxListings) {
+          return res.status(400).json({ 
+            success: false, 
+            message: `You've reached the maximum of ${maxListings} listings allowed on your ${planType} plan. Please upgrade your plan to create more listings.` 
+          });
+        }
+        
         paymentValidated = true;
         console.log(`Using existing plan subscription: ${activePlanUser._id}`);
       } else {
@@ -270,6 +328,22 @@ const create = async (req, res) => {
         website: businessWebsite,
         sellerId: req.user?.id,
       });
+      
+      // If using a subscription, increment the listings used count
+      if (!paymentId || paymentId === "using_existing_subscription") {
+        // Find the active subscription and increment the listings used count
+        const activePlanUser = await PlanUser.findOneAndUpdate(
+          {
+            userId: userId,
+            planId: servicePlan,
+            isActive: true
+          },
+          { $inc: { listingsUsed: 1 } },
+          { new: true }
+        );
+        
+        console.log(`Updated subscription usage. New count: ${activePlanUser.listingsUsed}`);
+      }
       
       res.status(201).json({
         success: true,
@@ -705,13 +779,33 @@ const updateListing = async (req, res) => {
 
     // Handle file uploads if present
     if (req.files) {
+      // Handle service images upload to Cloudinary
       if (req.files.serviceImages && req.files.serviceImages.length > 0) {
-        const imageUrls = req.files.serviceImages.map(file => path.join(file.filename));
-        updatedData.serviceImages = imageUrls;
+        try {
+          const imagePaths = req.files.serviceImages.map(file => file.path);
+          const uploadedImages = await cloudinaryService.uploadMultipleFiles(imagePaths, { folder: 'listings/images' });
+          updatedData.serviceImages = uploadedImages.map(image => image.secure_url);
+        } catch (error) {
+          console.error('Error uploading service images:', error);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Error uploading service images to cloud storage" 
+          });
+        }
       }
       
+      // Handle logo upload to Cloudinary
       if (req.files.logo && req.files.logo.length > 0) {
-        updatedData.logo = path.join(req.files.logo[0].filename);
+        try {
+          const uploadedLogo = await cloudinaryService.uploadFile(req.files.logo[0].path, { folder: 'listings/logos' });
+          updatedData.logo = uploadedLogo.secure_url;
+        } catch (error) {
+          console.error('Error uploading logo:', error);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Error uploading logo to cloud storage" 
+          });
+        }
       }
     }
 

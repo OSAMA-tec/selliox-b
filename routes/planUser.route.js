@@ -179,14 +179,37 @@ router.get("/my-subscriptions", isAuthenticated, async (req, res) => {
   try {
     const userId = req.user._id;
     
+    // Find all active subscriptions for this user
     const subscriptions = await PlanUser.find({ 
       userId: userId,
       isActive: true 
     }).populate('planId');
     
+    // Filter subscriptions based on plan type and listing limits
+    const availableSubscriptions = [];
+    
+    for (const subscription of subscriptions) {
+      // Skip basic plans entirely as requested
+      if (subscription.planId.planType === "basic") {
+        continue;
+      }
+      
+      const planType = subscription.planId.planType;
+      let maxListings = 5; // Default for premium plan
+      
+      if (planType === "featured") {
+        maxListings = 10;
+      }
+      
+      // Only include subscriptions that haven't reached their limit
+      if (subscription.listingsUsed < maxListings) {
+        availableSubscriptions.push(subscription);
+      }
+    }
+    
     res.status(200).json({
       success: true,
-      subscriptions: subscriptions
+      subscriptions: availableSubscriptions
     });
     
   } catch (error) {
